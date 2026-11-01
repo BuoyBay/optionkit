@@ -1,0 +1,337 @@
+Private Sub ValidateValueName(valueName As String)
+    If String.Len(valueName) < 1 Or String.Len(valueName) > 64 Then Throw New InvalidArgumentException("Value name must contain 1..64 ASCII identifier characters")
+    For Each ch As String In String.Chars(valueName)
+        If Not String.Contains("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-", ch, True) Then Throw New InvalidArgumentException("Invalid value name")
+    Next
+End Sub
+
+Private Function EscapeOptionHelp(text As String) As String
+    Dim output As String = String.Replace(text, "\\", "\\\\", True)
+    output = String.Replace(output, "\"", "\\\"", True)
+    output = String.Replace(output, "\r", "\\r", True)
+    output = String.Replace(output, "\n", "\\n", True)
+    Return String.Replace(output, "\t", "\\t", True)
+End Function
+
+''' Strict signed decimal Int64 parsing, without Integer.Parse's overflow bug.
+Private Function ParseOptionInteger(text As String) As Integer
+    Dim chars As Array Of String = String.Chars(text)
+    If Array.Count(chars) = 0 Or Array.Count(chars) > 20 Then Throw New InvalidArgumentException("Invalid decimal integer option")
+    Dim start As Integer = 0
+    Dim negative As Boolean = False
+    If chars(0) = "-" Or chars(0) = "+" Then
+        negative = chars(0) = "-"
+        start = 1
+    End If
+    If start = Array.Count(chars) Then Throw New InvalidArgumentException("Missing integer digits")
+    Dim limit As Integer = -9223372036854775807
+    If negative Then limit = -9223372036854775808
+    Dim threshold As Integer = limit \ 10
+    Dim number As Integer = 0
+    For i As Integer = start To Array.Count(chars) - 1
+        Dim digit As Integer = String.Asc(chars(i)) - 48
+        If digit < 0 Or digit > 9 Then Throw New InvalidArgumentException("Invalid integer digit")
+        If number < threshold Then Throw New InvalidArgumentException("Integer option overflow")
+        number *= 10
+        If number < limit + digit Then Throw New InvalidArgumentException("Integer option overflow")
+        number -= digit
+    Next
+    If negative Then Return number
+    Return -number
+End Function
+
+Private Function ParseOptionDouble(text As String) As Double
+    Dim chars As Array Of String = String.Chars(text)
+    Dim count As Integer = Array.Count(chars)
+    If count = 0 Or count > 1024 Then Throw New InvalidArgumentException("Invalid decimal Double option")
+    Dim i As Integer = 0
+    If chars(i) = "+" Or chars(i) = "-" Then i += 1
+    Dim digits As Integer = 0
+    While i < count
+        If Not String.Contains("0123456789", chars(i), True) Then Exit While
+        digits += 1
+        i += 1
+    End While
+    If i < count Then
+        If chars(i) = "." Then
+            i += 1
+            While i < count
+                If Not String.Contains("0123456789", chars(i), True) Then Exit While
+                digits += 1
+                i += 1
+            End While
+        End If
+    End If
+    If digits = 0 Then Throw New InvalidArgumentException("Missing Double digits")
+    If i < count Then
+        If chars(i) = "e" Or chars(i) = "E" Then
+            i += 1
+            If i < count Then
+                If chars(i) = "+" Or chars(i) = "-" Then i += 1
+            End If
+            Dim exponentStart As Integer = i
+            While i < count
+                If Not String.Contains("0123456789", chars(i), True) Then Exit While
+                i += 1
+            End While
+            If i = exponentStart Then Throw New InvalidArgumentException("Missing Double exponent digits")
+        End If
+    End If
+    If i <> count Then Throw New InvalidArgumentException("Invalid Double suffix")
+    Dim parsed As Result Of Double, String = Double.Parse(text)
+    If parsed.IsErr Then Throw New InvalidArgumentException("Invalid Double option")
+    Dim number As Double = parsed.Value
+    If Not (number >= -1.7976931348623157e308 And number <= 1.7976931348623157e308) Then Throw New InvalidArgumentException("Nonfinite Double option")
+    Return number
+End Function
+
+Private Function SameOption(a As String, b As String) As Boolean
+    Return String.Compare(a, b, True) = 0
+End Function
+
+Private Sub ValidateOptionName(name As String, shortName As Boolean)
+    If String.Len(name) = 0 Then Throw New InvalidArgumentException("Option name is empty")
+    If shortName And String.Len(name) <> 1 Then Throw New InvalidArgumentException("Short option must be one ASCII letter")
+    Dim chars As Array Of String = String.Chars(name)
+    For i As Integer = 0 To Array.Count(chars) - 1
+        Dim code As Integer = String.Asc(chars(i))
+        Dim letter As Boolean = (code >= 65 And code <= 90) Or (code >= 97 And code <= 122)
+        Dim extra As Boolean = i > 0 And Not shortName And ((code >= 48 And code <= 57) Or code = 45)
+        If Not letter And Not extra Then Throw New InvalidArgumentException("Invalid option name: " + name)
+    Next
+End Sub
+
+Private Class OptionDefinition
+    Public Property Name As String
+    Public Property ShortName As String
+    Public Property TakesValue As Boolean
+    Public Property Required As Boolean
+    Public Property Description As String
+    Public Property ValueName As String = "VALUE"
+    Public Property HasDefault As Boolean
+    Public Property DefaultValue As String
+End Class
+
+''' A parsed result owns its values; positional arguments are returned as copies.
+Public Class OptionResult
+    Private Property mNames As Array Of String = []
+    Private Property mValues As Array Of String = []
+    Private Property mPositionals As Array Of String = []
+    Private Property mDefaultNames As Array Of String = []
+    Private Property mDefaultValues As Array Of String = []
+
+    Public Function Has(name As String) As Boolean
+        For Each existing As String In mNames
+            If SameOption(existing, name) Then Return True
+        Next
+        Return False
+    End Function
+
+    Public Function Value(name As String) As String
+        For i As Integer = 0 To Array.Count(mNames) - 1
+            If SameOption(mNames(i), name) Then Return mValues(i)
+        Next
+        Throw New InvalidArgumentException("Option was not supplied: " + name)
+    End Function
+
+    ''' Return a new result with owned fallback values; supplied presence is unchanged.
+    Public Function WithDefaults(names As Array Of String, values As Array Of String) As OptionResult
+        If Array.Count(names) <> Array.Count(values) Then Throw New InvalidArgumentException("Default array lengths differ")
+        Dim output As New OptionResult(mNames, mValues, mPositionals)
+        For Each name As String In names
+            ValidateOptionName(name, False)
+            For Each existing As String In output.mDefaultNames
+                If SameOption(name, existing) Then Throw New InvalidArgumentException("Duplicate default: " + name)
+            Next
+            Array.Append(output.mDefaultNames, name)
+        Next
+        output.mDefaultValues = Array.Clone(values)
+        Return output
+    End Function
+
+    Public Function HasDefault(name As String) As Boolean
+        For Each existing As String In mDefaultNames
+            If SameOption(existing, name) Then Return True
+        Next
+        Return False
+    End Function
+
+    Public Function ResolvedValue(name As String) As String
+        If Me.Has(name) Then Return Me.Value(name)
+        For i As Integer = 0 To Array.Count(mDefaultNames) - 1
+            If SameOption(mDefaultNames(i), name) Then Return mDefaultValues(i)
+        Next
+        Throw New InvalidArgumentException("No supplied or default value: " + name)
+    End Function
+
+    Public Function IntegerValue(name As String, minimum As Integer = -9223372036854775808, maximum As Integer = 9223372036854775807) As Integer
+        If minimum > maximum Then Throw New InvalidArgumentException("Invalid integer bounds")
+        Dim number As Integer = ParseOptionInteger(Me.ResolvedValue(name))
+        If number < minimum Or number > maximum Then Throw New InvalidArgumentException("Option integer outside bounds: " + name)
+        Return number
+    End Function
+
+    Public Function DoubleValue(name As String, minimum As Double = -1.7976931348623157e308, maximum As Double = 1.7976931348623157e308) As Double
+        If Not (minimum >= -1.7976931348623157e308 And maximum <= 1.7976931348623157e308 And minimum <= maximum) Then Throw New InvalidArgumentException("Invalid Double bounds")
+        Dim number As Double = ParseOptionDouble(Me.ResolvedValue(name))
+        If number < minimum Or number > maximum Then Throw New InvalidArgumentException("Option Double outside bounds: " + name)
+        Return number
+    End Function
+
+    Public Function Positionals() As Array Of String
+        Return Array.Clone(mPositionals)
+    End Function
+
+    Public Sub Constructor(names As Array Of String, values As Array Of String, positionals As Array Of String)
+        If Array.Count(names) <> Array.Count(values) Then Throw New InvalidArgumentException("Option result array lengths differ")
+        For Each name As String In names
+            If Has(name) Then Throw New InvalidArgumentException("Option repeated: " + name)
+            Array.Append(mNames, name)
+        Next
+        mValues = Array.Clone(values)
+        mPositionals = Array.Clone(positionals)
+    End Sub
+End Class
+
+''' Case-sensitive schema for flags and String-valued command-line options.
+Public Class OptionSchema
+    Private Property mDefinitions As Array Of OptionDefinition = []
+
+    Private Sub AddDefinition(name As String, shortName As String, takesValue As Boolean, required As Boolean)
+        ValidateOptionName(name, False)
+        If String.Len(shortName) > 0 Then ValidateOptionName(shortName, True)
+        For Each definition As OptionDefinition In mDefinitions
+            If SameOption(definition.Name, name) Then Throw New InvalidArgumentException("Duplicate long option: " + name)
+            If String.Len(shortName) > 0 And SameOption(definition.ShortName, shortName) Then Throw New InvalidArgumentException("Duplicate short option: " + shortName)
+        Next
+        Dim definition As New OptionDefinition()
+        definition.Name = name
+        definition.ShortName = shortName
+        definition.TakesValue = takesValue
+        definition.Required = required
+        Array.Append(mDefinitions, definition)
+    End Sub
+
+    Public Sub AddFlag(name As String, shortName As String = "", description As String = "")
+        AddDefinition(name, shortName, False, False)
+        mDefinitions(Array.Count(mDefinitions) - 1).Description = description
+    End Sub
+
+    Public Sub AddValue(name As String, shortName As String = "", required As Boolean = False, description As String = "", valueName As String = "VALUE")
+        ValidateValueName(valueName)
+        AddDefinition(name, shortName, True, required)
+        Dim definition As OptionDefinition = mDefinitions(Array.Count(mDefinitions) - 1)
+        definition.Description = description
+        definition.ValueName = valueName
+    End Sub
+
+    Public Sub AddDefaultValue(name As String, defaultValue As String, shortName As String = "", description As String = "", valueName As String = "VALUE")
+        Me.AddValue(name, shortName, False, description, valueName)
+        Me.SetDefault(name, defaultValue)
+    End Sub
+
+    Public Sub SetDefault(name As String, defaultValue As String)
+        Dim definition As OptionDefinition = FindDefinition(name, False)
+        If Not definition.TakesValue Or definition.Required Then Throw New InvalidArgumentException("Defaults require a non-required value option")
+        definition.DefaultValue = defaultValue
+        definition.HasDefault = True
+    End Sub
+
+    Public Function Usage(programName As String, positionalUsage As String = "") As String
+        If String.Len(programName) = 0 Then Throw New InvalidArgumentException("Program name is empty")
+        Dim text As String = "Usage: " + EscapeOptionHelp(programName)
+        If Array.Count(mDefinitions) > 0 Then text += " [options]"
+        If String.Len(positionalUsage) > 0 Then text += " " + EscapeOptionHelp(positionalUsage)
+        Return text + "\n"
+    End Function
+
+    Public Function Help(programName As String, summary As String = "", positionalUsage As String = "") As String
+        Dim text As String = Me.Usage(programName, positionalUsage)
+        If String.Len(summary) > 0 Then text += "\n" + EscapeOptionHelp(summary) + "\n"
+        If Array.Count(mDefinitions) > 0 Then text += "\nOptions:\n"
+        For Each definition As OptionDefinition In mDefinitions
+            text += "  "
+            If String.Len(definition.ShortName) > 0 Then text += "-" + definition.ShortName + ", "
+            text += "--" + definition.Name
+            If definition.TakesValue Then text += " <" + definition.ValueName + ">"
+            If definition.Required Then text += " [required]"
+            If definition.HasDefault Then text += " [default: \"" + EscapeOptionHelp(definition.DefaultValue) + "\"]"
+            If String.Len(definition.Description) > 0 Then text += "  " + EscapeOptionHelp(definition.Description)
+            text += "\n"
+        Next
+        Return text
+    End Function
+
+    Private Function FindDefinition(name As String, shortName As Boolean) As OptionDefinition
+        For Each definition As OptionDefinition In mDefinitions
+            If shortName Then
+                If SameOption(definition.ShortName, name) Then Return definition
+            Else
+                If SameOption(definition.Name, name) Then Return definition
+            End If
+        Next
+        Throw New InvalidArgumentException("Unknown option: " + name)
+    End Function
+
+    ''' Input contains user arguments only: skip argv[0] before calling.
+    Public Function Parse(arguments As Array Of String, maxArguments As Integer = 10000) As OptionResult
+        If maxArguments < 1 Or Array.Count(arguments) > maxArguments Then Throw New InvalidArgumentException("Option argument-count limit exceeded")
+        Dim names() As String
+        Dim values() As String
+        Dim positionals() As String
+        Dim ended As Boolean = False
+        Dim i As Integer = 0
+        While i < Array.Count(arguments)
+            Dim arg As String = arguments(i)
+            If ended Or arg = "-" Or Not String.StartsWith(arg, "-", True) Then
+                Array.Append(positionals, arg)
+            ElseIf arg = "--" Then
+                ended = True
+            Else
+                Dim longOption As Boolean = String.StartsWith(arg, "--", True)
+                Dim start As Integer = 1
+                If longOption Then start = 2
+                Dim name As String = String.Substring(arg, start)
+                Dim supplied As Boolean = False
+                Dim value As String = ""
+                Dim equal As Integer = String.IndexOf(name, "=", 0, True)
+                If equal >= 0 Then
+                    value = String.Substring(name, equal + 1)
+                    name = String.Left(name, equal)
+                    supplied = True
+                End If
+                If Not longOption And String.Len(name) <> 1 Then Throw New InvalidArgumentException("Short options cannot be grouped: " + arg)
+                Dim definition As OptionDefinition = FindDefinition(name, Not longOption)
+                If definition.TakesValue Then
+                    If Not supplied Then
+                        i += 1
+                        If i >= Array.Count(arguments) Then Throw New InvalidArgumentException("Missing option value: " + definition.Name)
+                        value = arguments(i)
+                    End If
+                Else
+                    If supplied Then Throw New InvalidArgumentException("Flag cannot have a value: " + definition.Name)
+                    value = "true"
+                End If
+                For Each existing As String In names
+                    If SameOption(existing, definition.Name) Then Throw New InvalidArgumentException("Option repeated: " + definition.Name)
+                Next
+                Array.Append(names, definition.Name)
+                Array.Append(values, value)
+            End If
+            i += 1
+        End While
+        Dim output As New OptionResult(names, values, positionals)
+        For Each definition As OptionDefinition In mDefinitions
+            If definition.Required And Not output.Has(definition.Name) Then Throw New InvalidArgumentException("Required option missing: " + definition.Name)
+        Next
+        Dim defaultNames() As String
+        Dim defaultValues() As String
+        For Each definition As OptionDefinition In mDefinitions
+            If definition.HasDefault Then
+                Array.Append(defaultNames, definition.Name)
+                Array.Append(defaultValues, definition.DefaultValue)
+            End If
+        Next
+        Return output.WithDefaults(defaultNames, defaultValues)
+    End Function
+End Class
