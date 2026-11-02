@@ -1,4 +1,4 @@
-# Parse command-line flags, values and positionals
+# CLI flags, values, positionals
 
 A small strict command-line option schema. `Import optionkit` loads the
 source or sealed package. There are no native dependencies.
@@ -16,7 +16,7 @@ consumer project for reproducible installs.
 
 ## Example
 
-```buoy
+```basic
 Import optionkit
 
 Sub Main(args As Array Of String)
