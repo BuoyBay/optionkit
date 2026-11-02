@@ -19,8 +19,7 @@ source or sealed package. There are no native dependencies.
 - `result.Positionals()` returns a defensive copy of all positional arguments.
 
 Pass user arguments **without argv[0]**. Buoy includes the executable name in
-`Main(args)`; the example (not included in this repository) skips
-it explicitly. Parsing is separate from argument acquisition and has no stdout,
+`Main(args)`, so skip that element before parsing. Parsing is separate from argument acquisition and has no stdout,
 stderr, process-exit, environment, signal or filesystem side effects.
 
 Long names start with an ASCII letter and continue with ASCII letters, digits or
@@ -46,20 +45,6 @@ Results snapshot their inputs. `New OptionResult(names, values, positionals)` is
 also available for constructing a result; it validates equal name/value lengths
 and duplicate names, and clones all arrays. This constructor does not apply schema
 name rules or required-option validation.
-
-## Verification and packaging
-
-
-The runner seals a fresh package, checks the module, tests and example for all
-six desktop architecture/platform targets, and executes both sealed-package
-consumers on the host. It also invokes the example with Unicode, a terminator and
-an invalid option. Builds use a temporary tree to avoid unrelated resource
-manifests in the repository.
-
-`BPM_PACKAGER` selects the package command; it defaults to `/usr/bin/buoy` because
-the installed Linux compile wrapper does not handle `pkg`. `BUOY` selects the
-compiler. The local distributable is `packages/optionkit-0.1.0.buipkg`; no remote
-registry publication has occurred.
 
 ## Help, defaults and numeric access
 
@@ -91,10 +76,3 @@ still applies to finite values. Conversion/bounds errors throw
 validated unique fallback names. It replaces fallback metadata rather than
 mutating the receiver and does not apply schema-required/flag rules. Those rules
 are enforced by `OptionSchema`.
-
-
-The additional verifier runs 18 six-target checks, a Python integer oracle covering
-205 Int64 values, three sealed-package executions and the original OptionKit
-verification suite. See the help/default example (not included in this repository).
-
-Test suites and fixtures are maintainer-local and are not part of this public repository.

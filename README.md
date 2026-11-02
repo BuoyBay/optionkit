@@ -1,6 +1,6 @@
 # Parse command-line flags, values and positionals
 
-A small strict command-line option schema for Buoy. `Import optionkit` loads the
+A small strict command-line option schema. `Import optionkit` loads the
 source or sealed package. There are no native dependencies.
 
 ## Install
@@ -55,8 +55,6 @@ On your own machine, install Buoy and run:
 ```sh
 buoy ai init --both
 ```
-
-The generated agent files and editor settings stay local and are ignored by Git.
 
 ## Contributing
 
