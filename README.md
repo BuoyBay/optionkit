@@ -1,4 +1,4 @@
-# CLI flags, values, positionals
+# CLI flags and positionals
 
 A small strict command-line option schema. `Import optionkit` loads the
 source or sealed package. There are no native dependencies.
